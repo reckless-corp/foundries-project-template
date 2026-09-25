@@ -4,6 +4,7 @@
 #   tcpsvd 0.0.0.0 8080 /bin/sh /matrix.sh
 # Clients: curl "host:8080/?w=$(tput cols)"   (add &kana=1 for katakana)
 # Browsers (Accept: text/html) get matrix.html, a canvas version, instead.
+# Either way, half of requests get the Foundries "thumbs up guy" instead.
 
 cr=$(printf '\r')
 read -t 5 -r method path proto || exit 0
@@ -22,6 +23,31 @@ case "$path" in
 	exit 0
 	;;
 esac
+
+# coin flip: half the time, skip the rain and show the Foundries thumbs up guy
+if [ $(($(od -An -N1 -tu1 /dev/urandom) % 2)) = 0 ]; then
+	if [ "$browser" = 1 ]; then
+		printf 'HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n'
+		printf '<!doctype html><title>Thumbs Up</title><body style="background:#000;color:#0f0"><pre>\n'
+	else
+		printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n'
+	fi
+	cat <<'EOF'
+            _  _
+           | \/ |
+        \__|____|__/
+          |  o  o|           Thumbs Up
+          |___\/_|_____||_
+          |       _____|__|
+          |      |
+          |______|
+          | |  | |
+          | |  | |
+          |_|  |_|
+EOF
+	[ "$browser" = 1 ] && printf '</pre>\n'
+	exit 0
+fi
 
 if [ "$browser" = 1 ]; then
 	printf 'HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n'
