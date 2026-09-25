@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>matrix</title>
+<style>
+html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789$+-*/=%#&@<>:;|^~";
+const size = 16;
+const c = document.getElementById("c");
+const ctx = c.getContext("2d");
+let drops = [];
+
+function resize() {
+	c.width = innerWidth;
+	c.height = innerHeight;
+	drops = Array.from({ length: Math.ceil(c.width / size) },
+		() => Math.floor(Math.random() * -c.height / size));
+}
+
+function frame() {
+	// translucent black over the last frame makes trails fade out
+	ctx.fillStyle = "rgba(0, 0, 0, 0.08)";
+	ctx.fillRect(0, 0, c.width, c.height);
+	ctx.font = size + "px monospace";
+	drops.forEach((y, i) => {
+		const k = chars[Math.floor(Math.random() * chars.length)];
+		ctx.fillStyle = Math.random() < 0.1 ? "#dfd" : "#0f0";
+		ctx.fillText(k, i * size, y * size);
+		drops[i] = y * size > c.height && Math.random() > 0.975 ? 0 : y + 1;
+	});
+}
+
+addEventListener("resize", resize);
+resize();
+setInterval(frame, 50);
+</script>
+</body>
+</html>
