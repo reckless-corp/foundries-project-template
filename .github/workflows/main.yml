@@ -12,6 +12,7 @@ env:
   ARCHIVE: /var/code/reckless-corp/storage/archive
   KAS_CACHE: /var/code/reckless-corp/storage/kas
   KAS_CONTAINER: /var/code/reckless-corp/storage/kas/kas-container
+  COMPOSECTL: /var/code/reckless-corp/storage/composectl_v93
 
 jobs:
   yocto:
@@ -117,10 +118,9 @@ jobs:
           if-no-files-found: error
 
   apps:
+    name: Compose Apps
     needs: containers
     runs-on: [self-hosted, Linux, X64]
-    container:
-      image: foundries/lmp-app-tools
     strategy:
       fail-fast: false
       matrix:
@@ -145,11 +145,20 @@ jobs:
           path: pinned
           merge-multiple: true
 
+      - name: Composectl Setup
+        run: |
+          set -ex
+          if [ ! -x "${COMPOSECTL}" ] ; then
+            wget -O ${COMPOSECTL} https://github.com/foundriesio/composeapp/releases/download/v96.3.0/composectl_96.3.0_linux_amd64
+            chmod +x "${COMPOSECTL}"
+          fi
+
       - name: Build and push app
         id: build
         working-directory: containers/${{ matrix.app }}
         run: |
-          set -x
+          set -ex
+
           tag="${{ github.run_number }}_${{ needs.build-images.outputs.image_tag }}"
           pinned_args=""
           uris=""
@@ -160,7 +169,8 @@ jobs:
           if [ -n "${uris}" ] ; then
             pinned_args="--pinned-images ${uris}"
           fi
-          composectl publish -d app.hash ${pinned_args} ghcr.io/${{ github.repository_owner }}/${{ matrix.app }}-app:${tag} ${{ matrix.platforms }}
+
+          ${COMPOSECTL} publish -d app.hash ${pinned_args} ghcr.io/${{ github.repository_owner }}/${{ matrix.app }}-app:${tag} ${{ matrix.platforms }}
           uri="ghcr.io/${{ github.repository_owner}}/${{ matrix.app }}-app@$(cat app.hash)"
           mkdir -p ../app-uris
           echo "${uri}" > "../app-uris/${{ matrix.app }}"
@@ -173,6 +183,7 @@ jobs:
           if-no-files-found: error
 
   archive:
+    name: Archive
     needs: [yocto, containers, apps]
     runs-on: [self-hosted, Linux, X64]
 
@@ -191,19 +202,41 @@ jobs:
           path: app-uris
           merge-multiple: true
 
+      - name: Composectl Setup
+        run: |
+          set -ex
+          if [ ! -x "${COMPOSECTL}" ] ; then
+            wget -O ${COMPOSECTL} https://github.com/foundriesio/composeapp/releases/download/v96.3.0/composectl_96.3.0_linux_amd64
+            chmod +x "${COMPOSECTL}"
+          fi
+
       - name: Download apps
         run: |
-          set -x
-
-          wget -O /tmp/composectl https://github.com/foundriesio/composeapp/releases/download/v96.3.0/composectl_96.3.0_linux_amd64
-          chmod +x /tmp/composectl
+          set -ex
 
           archive="${ARCHIVE}/${{ github.event.repository.name }}/${GITHUB_SHA}/apps"
           mkdir -p ${archive}
           echo "${{ github.run_number }}" > ${archive}/version
           for f in app-uris/* ; do
             uri="$(cat "${f}")"
+            echo "::group::${uri}"
             /tmp/composectl pull -i ${archive} -s ${archive} "${uri}"
+            echo "::endgroup::"
+          done
+
+      - name: Assemble for Update Server
+        run: |
+          set -ex
+
+          cd "${ARCHIVE}/${{ github.event.repository.name }}/${GITHUB_SHA}"
+
+          for machine in *; do
+            [[ "$machine" == "apps" ]] && continue
+            echo "::group::Assemble for ${machine}"
+            mkdir -p ${machine}/update-server
+            tar -C ${machine}/update-server -xzf ${machine}/ostree_repo.tgz
+            cp -al ./apps ${machine}/update-server/apps
+            echo "::endgroup::"
           done
 
       - name: Archive
