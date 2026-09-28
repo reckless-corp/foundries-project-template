@@ -172,6 +172,17 @@ jobs:
 
           ${COMPOSECTL} publish -d app.hash ${pinned_args} ghcr.io/${{ github.repository_owner }}/${{ matrix.app }}-app:${tag} ${{ matrix.platforms }}
           uri="ghcr.io/${{ github.repository_owner}}/${{ matrix.app }}-app@$(cat app.hash)"
+
+          archive="${ARCHIVE}/${{ github.event.repository.name }}/${GITHUB_SHA}/apps"
+          mkdir -p ${archive}
+
+          IFS=',' read -r -a platforms <<< "${{ matrix.platforms }}"
+          for platform in "${platforms[@]}" ; do
+            echo "::group::Pull for ${platform}"
+            ${COMPOSECTL} pull -i ${archive} -s ${archive} -a ${platform} "${uri}"
+            echo "::endgroup::"
+          done
+
           mkdir -p ../app-uris
           echo "${uri}" > "../app-uris/${{ matrix.app }}"
 
@@ -194,35 +205,6 @@ jobs:
           registry: https://ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download app URIs
-        uses: actions/download-artifact@v4
-        with:
-          pattern: app-uri-*
-          path: app-uris
-          merge-multiple: true
-
-      - name: Composectl Setup
-        run: |
-          set -ex
-          if [ ! -x "${COMPOSECTL}" ] ; then
-            wget -O ${COMPOSECTL} https://github.com/foundriesio/composeapp/releases/download/v96.3.0/composectl_96.3.0_linux_amd64
-            chmod +x "${COMPOSECTL}"
-          fi
-
-      - name: Download apps
-        run: |
-          set -ex
-
-          archive="${ARCHIVE}/${{ github.event.repository.name }}/${GITHUB_SHA}/apps"
-          mkdir -p ${archive}
-          echo "${{ github.run_number }}" > ${archive}/version
-          for f in app-uris/* ; do
-            uri="$(cat "${f}")"
-            echo "::group::${uri}"
-            /tmp/composectl pull -i ${archive} -s ${archive} "${uri}"
-            echo "::endgroup::"
-          done
 
       - name: Assemble for Update Server
         run: |
