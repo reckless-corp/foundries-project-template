@@ -7,10 +7,31 @@
 <style>
 html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
 canvas { display: block; }
+#mascot {
+	position: fixed;
+	top: 50%; left: 50%;
+	transform: translate(-50%, -50%);
+	margin: 0;
+	font: clamp(8px, 2.4vw, 20px)/1.2 monospace;
+	color: rgba(225, 255, 225, 0.9);
+	text-shadow: 0 0 6px #0f0;
+	pointer-events: none;
+}
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
+<canvas id="c" aria-hidden="true"></canvas>
+<pre id="mascot" role="img" aria-label="Thumbs up guy">            _  _
+           | \/ |
+        \__|____|__/
+          |  o  o|           Thumbs Up
+          |___\/_|_____||_
+          |       _____|__|
+          |      |
+          |______|
+          | |  | |
+          | |  | |
+          |_|  |_|</pre>
 <script>
 const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789$+-*/=%#&@<>:;|^~";
 const size = 16;
