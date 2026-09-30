@@ -1,0 +1,20 @@
+Subject: [PATCH] Exit on load failure when supervised
+
+An unattended kiosk must not remain on a manual "Try again" page when the
+local application has not started yet. Allow the systemd supervisor to
+restart Cog and repeat its HTTP readiness check. Ignore navigation
+cancellations as before; normal Cog sessions retain their error page.
+
+Upstream-Status: Inappropriate [project kiosk supervision policy]
+
+--- a/core/cog-webkit-utils.c
++++ b/core/cog-webkit-utils.c
+@@ -92,3 +92,8 @@ cog_handle_web_view_load_failed (WebKitWebView  *web_view,
++    if (g_strcmp0(g_getenv("COG_EXIT_ON_LOAD_FAILURE"), "1") == 0) {
++        g_warning("Kiosk navigation failed for %s: %s", failing_uri, error ? error->message : "unknown error");
++        exit(EXIT_FAILURE);
++    }
++
+     return load_error_page (web_view,
+                             failing_uri,
+                             "Page load error",

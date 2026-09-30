@@ -7,7 +7,79 @@ Build either image from the repository root:
 ./yocto/build.sh uno-q.yml
 ```
 
-Both configurations include `meta-project` and its `matrix-console` package.
+## Browser kiosk images
+
+For a fullscreen browser instead of the Matrix console, build on the build
+server (`ssh og`) from `/var/code/reckless-corp/foundries-project-template`:
+
+```sh
+./yocto/build.sh intel-corei7-64-kiosk.yml
+./yocto/build.sh uno-q-kiosk.yml
+```
+
+These configurations include the pinned `meta-webkit` layer and
+`meta-openembedded/meta-multimedia`. They install WPE WebKit, Cog, Weston and
+the `browser-kiosk` service. The shared settings live in `kiosk.yml`.
+See the upstream [WPE integration guide](https://github.com/Igalia/meta-webkit/wiki/WPE).
+
+The helper gives each kiosk configuration its own build directory under
+`yocto/.build/work/build-<configuration>`; downloads and sstate remain shared.
+Set `KAS_BUILD_DIR` to override that location. Do not run builds concurrently
+against the shared layer checkouts, as KAS may switch their revisions.
+
+On boot, Weston uses its kiosk shell to display Cog fullscreen, without a
+desktop panel or browser controls. Display blanking is disabled. The browser
+runs as the unprivileged `weston` user and opens `http://127.0.0.1:8080/`.
+The application must publish port 8080 on the **host** (for example with a
+container port mapping); this image does not install or start the webserver.
+
+Startup checks the URL every two seconds until an HTTP request succeeds,
+following redirects and rejecting HTTP 4xx/5xx responses. Each request has a
+five-second timeout. If browser navigation then fails, the opt-in Cog patch
+exits the browser so systemd retries after three seconds and checks readiness
+again. Browser/WebProcess crashes also restart it, with no retry limit.
+Healthy pages are not periodically reloaded. Once a page has loaded, the web
+application is responsible for reconnecting failed API/WebSocket requests;
+the browser service does not monitor those requests or detect hung pages.
+
+Change the URL in `/etc/default/browser-kiosk`, then restart the service:
+
+```sh
+sudo systemctl restart browser-kiosk
+sudo systemctl status browser-kiosk weston
+sudo journalctl -u browser-kiosk -u weston -b
+```
+
+The compositor settings are in `/etc/xdg/weston/kiosk.ini`. Weston uses tty7;
+**Ctrl+Alt+F2** opens a login console and **Ctrl+Alt+F7** returns to the kiosk.
+SSH and serial access remain available. To stop the display session:
+
+```sh
+sudo systemctl stop browser-kiosk weston.service weston.socket
+```
+
+Kiosk mode requires working DRM/KMS, EGL and OpenGL ES drivers on the board,
+not just `/dev/fb0`. The Uno Q configuration enables the same graphics stack
+but still needs validation with the board's display/GPU drivers. Fullscreen
+mode is a presentation setting, not a security lockdown of local consoles.
+
+Run the startup tests on a host with Python 3 and curl:
+
+```sh
+python3 -B -m unittest discover -s yocto/tests -p test_browser_kiosk.py -v
+```
+
+After flashing, check fullscreen output and input; boot with the application
+stopped, leave it stopped for at least a minute, then start it and confirm
+the page appears without intervention. Also test browser navigation while
+the server is unavailable, browser/WebProcess crashes, and a Weston restart.
+Host tests cover HTTP readiness, redirects and launcher exit propagation;
+they cannot validate display drivers or actual WebKit navigation.
+
+## Matrix console images
+
+The base `intel-corei7-64.yml` and `uno-q.yml` configurations include
+`meta-project` and its `matrix-console` package.
 After normal boot messages, the first Linux virtual console (`/dev/tty1`,
 normally the HDMI display) shows green Matrix rain and the Thumbs Up artwork.
 This runs directly on the console, without a container or network connection.

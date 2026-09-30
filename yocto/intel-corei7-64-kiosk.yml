@@ -1,0 +1,5 @@
+header:
+  version: 14
+  includes:
+    - intel-corei7-64.yml
+    - kiosk.yml

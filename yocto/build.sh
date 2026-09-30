@@ -11,7 +11,7 @@ mkdir -p "${DL_DIR}" "${SSTATE_DIR}" "${KAS_WORK_DIR}"
 
 if (( $# < 1 || $# > 2 )); then
     echo "Usage: $0 <kas-file.yml> [action]"
-    echo "Available kas files:" $(ls *.yml | grep -v common)
+    echo "Available kas files:" $(ls *.yml | grep -Ev '^(common|kiosk)\.yml$')
     exit 2
 fi
 
@@ -28,6 +28,14 @@ if [ ! -f ${kasfile} ] ; then
 	echo "ERROR: No such file ${kasfile}"
 	exit 1
 fi
+
+# Keep kiosk builds separate from existing console builds (and from each other).
+# KAS_BUILD_DIR remains overridable for callers with their own build layout.
+case "$(basename "$kasfile")" in
+    *-kiosk.yml)
+        export KAS_BUILD_DIR="${KAS_BUILD_DIR:-${KAS_WORK_DIR}/build-$(basename "$kasfile" .yml)}"
+        ;;
+esac
 
 set -x
 exec ${kc} "${action}" "${kasfile}"

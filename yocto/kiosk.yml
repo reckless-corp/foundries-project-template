@@ -1,0 +1,23 @@
+# Shared overlay; build one of the *-kiosk.yml machine configurations.
+header:
+  version: 14
+
+repos:
+  meta-webkit:
+    url: https://github.com/Igalia/meta-webkit.git
+    commit: 67d80da9531db9e1f9abf0d234ef8e328a08bf10
+    layers:
+      .:
+  meta-openembedded:
+    layers:
+      meta-multimedia:
+
+local_conf_header:
+  browser-kiosk: |
+    DISTRO_FEATURES:append = " opengl wayland pam"
+    IMAGE_INSTALL:remove = "matrix-console"
+    IMAGE_INSTALL:append = " browser-kiosk"
+    PREFERRED_PROVIDER_virtual/wpebackend = "wpebackend-fdo"
+    PACKAGECONFIG:pn-cog = "wl"
+    PACKAGECONFIG:append:pn-weston = " kms egl systemd shell-kiosk"
+    PACKAGECONFIG:remove:pn-weston-init = "xwayland"

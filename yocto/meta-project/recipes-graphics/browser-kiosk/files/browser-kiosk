@@ -1,0 +1,15 @@
+#!/bin/sh
+# Wait indefinitely for a successful HTTP response, with bounded individual
+# requests. A listening socket alone does not mean the app is ready.
+set -eu
+url=${KIOSK_URL:-http://127.0.0.1:8080/}
+echo "Waiting for kiosk application at $url"
+until curl --noproxy '*' --fail --silent --show-error --location \
+    --connect-timeout 2 --max-time 5 --output /dev/null "$url"; do
+    sleep 2
+done
+
+# The Cog load-failure patch covers a server disappearing between the probe
+# and navigation. systemd restarts this wrapper, which waits for readiness again.
+export COG_EXIT_ON_LOAD_FAILURE=1
+exec dbus-run-session -- cog --platform=wl --webprocess-failure=exit "$url"
