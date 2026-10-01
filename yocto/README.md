@@ -22,6 +22,14 @@ These configurations include the pinned `meta-webkit` layer and
 the `browser-kiosk` service. The shared settings live in `kiosk.yml`.
 See the upstream [WPE integration guide](https://github.com/Igalia/meta-webkit/wiki/WPE).
 
+For UNO Q, the libjxl 0.12 recipe append disables Highway's SVE variants to
+avoid a GCC internal compiler error in `simplify_gen_subreg_concatn` when
+compiling `enc_transforms-inl.h`. Cortex-A53 does not support SVE; NEON
+acceleration remains enabled. Libjxl 0.12 requires per-target CMake options
+because the older `JPEGXL_ENABLE_SIZELESS_VECTORS` option is no longer used.
+The WPE WebKit 2.54 recipe append also adds the missing `virtual/libgbm`
+dependency when its GBM feature is enabled.
+
 The helper gives each kiosk configuration its own build directory under
 `yocto/.build/work/build-<configuration>`; downloads and sstate remain shared.
 Set `KAS_BUILD_DIR` to override that location. Do not run builds concurrently
