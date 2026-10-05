@@ -1,0 +1,32 @@
+services:
+  hat:
+    image: ghcr.io/reckless-corp/uno-q-hat
+    build: .
+    platform: linux/arm64
+    init: true
+    command: [serve]
+    devices:
+      - /dev/gpiochip1:/dev/gpiochip1
+    volumes:
+      - /sys/firmware/devicetree/base:/board:ro
+      - firmware-backup:/state
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, test, -f, /tmp/firmware-ready]
+      interval: 10s
+      timeout: 2s
+      start_period: 5m
+      retries: 1
+
+volumes:
+  firmware-backup:
+    # Preserve the original backup and operation lock across compose project names.
+    name: uno-q-hat_firmware-backup

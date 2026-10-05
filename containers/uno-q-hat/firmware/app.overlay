@@ -1,0 +1,4 @@
+/* A monochrome image needs only one scan per refresh. */
+&led_matrix {
+	grayscale-bits = <1>;
+};
