@@ -7,9 +7,13 @@ services:
     command: [serve]
     devices:
       - /dev/gpiochip1:/dev/gpiochip1
+      - ${MCU_UART_DEVICE:-/dev/ttyHS1}:/dev/uno-q-mcu
+    environment:
+      MCU_UART: /dev/uno-q-mcu
     volumes:
       - /sys/firmware/devicetree/base:/board:ro
       - firmware-backup:/state
+      - control-socket:/run/uno-q-hat
     network_mode: none
     read_only: true
     tmpfs:
@@ -20,13 +24,14 @@ services:
       - no-new-privileges:true
     restart: unless-stopped
     healthcheck:
-      test: [CMD, test, -f, /tmp/firmware-ready]
+      test: [CMD, uno-q-hatctl, PING]
       interval: 10s
-      timeout: 2s
+      timeout: 8s
       start_period: 5m
       retries: 1
 
 volumes:
+  control-socket:
   firmware-backup:
     # Preserve the original backup and operation lock across compose project names.
     name: uno-q-hat_firmware-backup

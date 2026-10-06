@@ -66,12 +66,20 @@ RUN aarch64-linux-gnu-gcc -Os -Wall -Wextra -Werror /work/gpio-check.c -o /runti
     && gzip -9 /tmp/openocd-source.tar \
     && mv /tmp/openocd-source.tar.gz /runtime/share/src/
 
+FROM tools AS controller
+COPY controller /work/controller
+COPY firmware/src/protocol.c firmware/src/protocol.h /work/protocol/
+RUN aarch64-linux-gnu-gcc -std=c11 -Os -Wall -Wextra -Werror -I/work/protocol \
+    /work/controller/hatctl.c /work/protocol/protocol.c -o /work/uno-q-hatctl \
+    && aarch64-linux-gnu-strip /work/uno-q-hatctl
+
 FROM ${BASE}
 # No target-architecture RUN instructions: an x86 builder needs no QEMU.
 COPY --from=flasher /opt/openocd /opt/openocd
 COPY --from=flasher /runtime/lib /usr/local/lib
 COPY --from=flasher /runtime/share /usr/local/share
 COPY --from=flasher /runtime/gpio-check /usr/local/bin/uno-q-gpio-check
+COPY --from=controller /work/uno-q-hatctl /usr/local/bin/uno-q-hatctl
 COPY --from=firmware /work/build/zephyr/zephyr.elf /firmware/zephyr.elf
 COPY --from=firmware /work/build/zephyr/build-info.txt /firmware/build-info.txt
 COPY --from=firmware /work/licenses /usr/local/share/licenses/firmware

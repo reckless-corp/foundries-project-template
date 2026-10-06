@@ -5,12 +5,10 @@ operation=${1:-install}
 case "$operation" in
     serve)
         # A completed one-shot does not restart when Docker starts after boot.
-        # Keep a cheap idle process, but never loop over a failing flash attempt.
-        ready=${MCU_READY_FILE:-/tmp/firmware-ready}
-        rm -f "$ready"
+        # Never loop over a failing flash attempt. UART recovery does not reflash.
         if sh "$0" install; then
-            touch "$ready"
-            echo 'Firmware ready; waiting for container shutdown'
+            mkdir -p "$(dirname "${MCU_SOCKET:-/run/uno-q-hat/control.sock}")"
+            exec uno-q-hatctl daemon
         else
             echo 'MCU installation failed; remaining unhealthy until manually restarted' >&2
         fi

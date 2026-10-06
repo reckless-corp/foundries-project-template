@@ -29,10 +29,11 @@ if [ "$MCU_OPERATION" = backup ]; then
     dd if=/dev/zero of="$MCU_BACKUP" bs=1048576 count=2 2>/dev/null
 fi
 ''')
+        self.script("uno-q-hatctl", '#!/bin/sh\necho controller >> "$CALLS"\n')
         self.script("sleep", '#!/bin/sh\necho idle >> "$CALLS"\n')
         self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
                         MCU_STATE_DIR=str(self.state), MCU_BOARD_DIR=str(board),
-                        MCU_READY_FILE=str(self.root / "ready"),
+                        MCU_SOCKET=str(self.root / "run/control.sock"),
                         CALLS=str(self.root / "calls"))
 
     def script(self, name, text):
@@ -96,18 +97,17 @@ fi
         self.assertEqual(self.calls(), ["verify"])
         self.assertFalse((self.state / "original.sha256").exists())
 
-    def test_service_becomes_ready_only_after_installation(self):
+    def test_service_starts_controller_only_after_installation(self):
         result = self.run_installer("serve")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls(), ["backup", "install", "idle"])
-        self.assertTrue((self.root / "ready").exists())
+        self.assertEqual(self.calls(), ["backup", "install", "controller"])
+        self.assertTrue((self.root / "run").is_dir())
 
-    def test_service_failure_clears_readiness_and_does_not_retry(self):
-        (self.root / "ready").touch()
+    def test_service_failure_does_not_start_controller_or_retry(self):
         result = self.run_installer("serve", FAIL_OPERATION="install")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls(), ["backup", "install", "idle"])
-        self.assertFalse((self.root / "ready").exists())
+        self.assertFalse((self.root / "run").exists())
         self.assertIn("remaining unhealthy", result.stderr)
 
 

@@ -15,7 +15,8 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	if (strcmp(chip.label, "500000.pinctrl") || chip.lines != 127) {
-		fprintf(stderr, "Unexpected GPIO controller: %s (%u lines)\n", chip.label, chip.lines);
+		fprintf(stderr, "Unexpected GPIO controller: %s (%u lines)\n",
+			chip.label, chip.lines);
 		return 1;
 	}
 	const unsigned int pins[] = {25, 26, 37, 38};
@@ -26,7 +27,8 @@ int main(int argc, char **argv)
 			return 1;
 		}
 		if (line.flags & GPIO_V2_LINE_FLAG_USED) {
-			fprintf(stderr, "GPIO %u is owned by %s\n", pins[i], line.consumer);
+			fprintf(stderr, "GPIO %u is owned by %s\n", pins[i],
+				line.consumer);
 			return 1;
 		}
 	}
@@ -35,8 +37,10 @@ int main(int argc, char **argv)
 		 * Hold it for the entire OpenOCD operation, including reset.
 		 */
 		struct gpio_v2_line_request boot = {
-			.offsets = {37}, .consumer = "uno-q-hat-boot",
-			.config = {.flags = GPIO_V2_LINE_FLAG_OUTPUT}, .num_lines = 1,
+		    .offsets = {37},
+		    .consumer = "uno-q-hat-boot",
+		    .config = {.flags = GPIO_V2_LINE_FLAG_OUTPUT},
+		    .num_lines = 1,
 		};
 		if (ioctl(fd, GPIO_V2_GET_LINE_IOCTL, &boot) < 0 ||
 		    fcntl(boot.fd, F_SETFD, 0) < 0) {
