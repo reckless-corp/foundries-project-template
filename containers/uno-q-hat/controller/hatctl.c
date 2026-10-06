@@ -28,6 +28,15 @@ static bool exclusive;
 static char desired_frame[40] = "SHOW HAT";
 static char desired_display[16] = "DISPLAY ON";
 static bool online;
+static bool supports_animation;
+static bool desired_is_animation;
+static struct hat_animation desired_animation;
+
+static void frame_hex(const uint8_t *pixels, char *out)
+{
+	for (size_t i = 0; i < HAT_FRAME_SIZE; ++i)
+		snprintf(out + i * 2, 3, "%02x", pixels[i]);
+}
 
 static const char *setting(const char *name, const char *fallback)
 {
@@ -173,6 +182,31 @@ static int request(const char *command, char *reply, size_t size)
 		return !strncmp(body, "ERR ", 4);
 	}
 }
+/* One local command becomes a bounded, acknowledged upload over UART. */
+static int upload_animation(const struct hat_animation *animation, char *reply,
+			    size_t size)
+{
+	char command[HAT_LINE_MAX + 1], hex[HAT_FRAME_SIZE * 2 + 1];
+	if (!supports_animation) {
+		snprintf(reply, size, "ERR UNSUPPORTED");
+		return 1;
+	}
+	snprintf(command, sizeof(command), "ANIM BEGIN %zu", animation->count);
+	int rc = request(command, reply, size);
+	if (rc)
+		return rc;
+	for (size_t i = 0; i < animation->count; ++i) {
+		frame_hex(animation->steps[i].pixels, hex);
+		snprintf(command, sizeof(command), "ANIM ADD %" PRIu32 " %s",
+			 animation->steps[i].duration_ms, hex);
+		if ((rc = request(command, reply, size)))
+			return rc;
+	}
+	snprintf(command, sizeof(command), "ANIM PLAY %" PRIu32,
+		 animation->repeats);
+	return request(command, reply, size);
+}
+
 static bool get_boot(const char *reply, uint32_t *value)
 {
 	const char *s = strstr(reply, " boot=");
@@ -193,7 +227,10 @@ static int handshake(void)
 	    !strstr(reply, " width=13 height=8 ") || !get_boot(reply, &boot_id))
 		return -1;
 	fprintf(stderr, "MCU %s\n", reply);
-	if (request(desired_frame, reply, sizeof(reply)) ||
+	supports_animation = strstr(reply, " anim=64 ") != NULL;
+	if ((desired_is_animation
+		 ? upload_animation(&desired_animation, reply, sizeof(reply))
+		 : request(desired_frame, reply, sizeof(reply))) ||
 	    request(desired_display, reply, sizeof(reply)))
 		return -1;
 	online = true;
@@ -271,24 +308,54 @@ static int daemon_main(void)
 		if (client < 0)
 			continue;
 		fcntl(client, F_SETFL, O_NONBLOCK);
-		char command[HAT_LINE_MAX + 1], reply[HAT_LINE_MAX + 1];
+		char command[HAT_CLIENT_LINE_MAX + 1], reply[HAT_LINE_MAX + 1];
 		int rc =
 		    read_line(client, command, sizeof(command), now_ms() + 500);
 		struct hat_command parsed;
+		struct hat_animation animation;
 		const char *error =
-		    rc ? "BAD_LINE" : hat_parse_command(command, &parsed);
+		    rc ? "BAD_LINE"
+		       : hat_parse_client(command, &parsed, &animation);
 		if (error)
 			snprintf(reply, sizeof(reply), "ERR %s", error);
 		else if (ensure_mcu() ||
-			 (rc = request(command, reply, sizeof(reply))) < 0) {
+			 (rc = parsed.operation == HAT_ANIM_PLAY
+				   ? upload_animation(&animation, reply,
+						      sizeof(reply))
+				   : request(command, reply, sizeof(reply))) <
+			     0) {
 			disconnect_mcu();
 			strcpy(reply, "ERR UNAVAILABLE");
 		} else if (rc == 0) {
 			if (parsed.operation == HAT_SHOW ||
-			    parsed.operation == HAT_FRAME)
-				strcpy(
-				    desired_frame,
-				    command); /* Validated FRAME/SHOW length. */
+			    parsed.operation == HAT_FRAME) {
+				strcpy(desired_frame, command);
+				desired_is_animation = false;
+			}
+			if (parsed.operation == HAT_ANIM_PLAY) {
+				desired_animation = animation;
+				desired_is_animation = true;
+			}
+			if (parsed.operation == HAT_ANIM_STOP) {
+				/* Preserve the actual stopped frame, not an
+				 * estimated index. */
+				char frame[40];
+				struct hat_command stopped;
+				snprintf(frame, sizeof(frame), "FRAME %.32s",
+					 !strncmp(reply, "OK frame=", 9)
+					     ? reply + 9
+					     : "");
+				if (strlen(reply) != 41 ||
+				    strncmp(reply, "OK frame=", 9) ||
+				    hat_parse_command(frame, &stopped)) {
+					strcpy(reply, "ERR BAD_REPLY");
+					disconnect_mcu();
+				} else {
+					strcpy(desired_frame, frame);
+					desired_is_animation = false;
+					strcpy(reply, "OK");
+				}
+			}
 			if (parsed.operation == HAT_DISPLAY)
 				strcpy(desired_display,
 				       command); /* Validated DISPLAY length. */
@@ -310,7 +377,7 @@ int main(int argc, char **argv)
 	signal(SIGINT, stop);
 	if (argc == 2 && !strcmp(argv[1], "daemon"))
 		return daemon_main();
-	char command[HAT_LINE_MAX + 1] = "";
+	char command[HAT_CLIENT_LINE_MAX + 1] = "";
 	for (int i = 1; i < argc; ++i) {
 		if (strlen(command) + strlen(argv[i]) + 2 > sizeof(command))
 			return 2;
@@ -319,11 +386,13 @@ int main(int argc, char **argv)
 		strcat(command, argv[i]);
 	}
 	struct hat_command parsed;
-	const char *error = hat_parse_command(command, &parsed);
+	struct hat_animation animation;
+	const char *error = hat_parse_client(command, &parsed, &animation);
 	if (argc < 2 || error) {
 		fprintf(stderr,
 			"Usage: uno-q-hatctl {HELLO|PING|SHOW HAT|DISPLAY "
-			"ON|DISPLAY OFF|FRAME hex|daemon}\n");
+			"ON|DISPLAY OFF|FRAME hex|ANIM repeats ms:hex "
+			"[...]|ANIM STOP|daemon}\n");
 		return 2;
 	}
 	strcat(command, "\n");
@@ -338,7 +407,9 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	char reply[HAT_LINE_MAX + 1];
-	int64_t deadline = now_ms() + 6000;
+	/* Allow a maximum-size restore followed by a new upload (750 ms/ACK).
+	 */
+	int64_t deadline = now_ms() + 120000;
 	if (send_all(fd, command, deadline) ||
 	    read_line(fd, reply, sizeof(reply), deadline)) {
 		fprintf(stderr, "Controller timed out or disconnected\n");

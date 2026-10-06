@@ -95,6 +95,38 @@ docker compose -p uno-q-hat exec -T hat uno-q-hatctl SHOW HAT
 docker compose -p uno-q-hat exec -T hat uno-q-hatctl FRAME ff1fff1fff1fff1fff1fff1fff1fff1f
 ```
 
+To blink a plus sign on for 500 ms and off for 500 ms, upload the complete
+animation in one command:
+
+```sh
+docker compose -p uno-q-hat exec -T hat uno-q-hatctl ANIM 0 \
+  500:000040004000f8034000400000000000 \
+  500:00000000000000000000000000000000
+```
+
+The syntax is `ANIM <repeat-count> <milliseconds>:<32-hex-digits> [...]`.
+Use `0` for infinite repetition or `1`–`4294967295` for that many complete cycles.
+An animation accepts 1–64 frames, each held for 20–60,000 ms. The last frame is
+held for its duration before finite playback ends, then remains displayed.
+`ANIM STOP` stops playback and holds the current image. A successful `FRAME` or
+`SHOW HAT` also stops playback. `DISPLAY OFF` hides the animation without pausing
+it; use `DISPLAY ON` to make it visible again.
+
+The whole command is validated before uploading. The MCU keeps playing its
+previous animation until the new upload is complete and its first frame is
+successfully written. Playback runs on the MCU, independently of the CLI process.
+A delayed display update holds the next frame for its full duration rather than
+rushing through missed frames. If a display write fails during playback, playback
+stops; the initial `OK` acknowledges starting the animation, not future updates.
+
+The controller retains the last acknowledged animation in memory. After a UART
+reconnect or MCU reset it uploads and restarts that animation from the beginning,
+including the full repeat count for a finite animation. After `ANIM STOP`, it
+restores the actual stopped frame instead. Restarting the controller itself
+returns to `SHOW HAT` and `DISPLAY ON`; animations are not persisted to disk.
+When firmware lacks the `anim=64` HELLO capability, the controller returns
+`ERR UNSUPPORTED` for a new animation upload. Rebuild and install both firmware and controller to use it.
+
 `SHOW HAT` and `FRAME` update the image without changing visibility. Commands exit
 zero only for `OK`; MCU errors, missing controller, and timeouts exit nonzero.
 `HELLO` reports protocol version, an application source/configuration fingerprint,
@@ -113,10 +145,10 @@ The controller checks the MCU every two seconds. After reconnecting or detecting
 a changed boot identifier, it negotiates protocol version 1 and reapplies the
 last acknowledged image and visibility. These desired settings live in controller
 memory: restarting the controller restores the built-in hat with the display on.
-If Linux stops, the MCU retains its current image; resetting the MCU starts with
-the hat until Linux restores the desired settings. An interrupted request may
-have executed even if its response was lost. Clients can safely retry these
-state-setting commands; there are no toggle/increment commands.
+If Linux stops, the MCU retains its static image or continues animation playback;
+resetting the MCU starts with the hat until Linux restores the desired settings.
+An interrupted request may have executed even if its response was lost. Retrying
+a client `ANIM` command restarts the animation with its full repeat count.
 
 ### Local socket API
 
@@ -151,25 +183,44 @@ Commands and spacing are case-sensitive.
 
 | Command | Result / effect |
 | --- | --- |
-| `HELLO` | `proto=1 firmware=<fingerprint> width=13 height=8 boot=<8 hex digits>` |
+| `HELLO` | `proto=1 firmware=<fingerprint> width=13 height=8 anim=64 boot=<8 hex digits>` |
 | `PING` | `boot=<8 hex digits> uptime_ms=<milliseconds>` |
 | `SHOW HAT` | Replace image with the built-in hat; preserve visibility |
 | `DISPLAY ON` / `DISPLAY OFF` | Set visibility; preserve image |
 | `FRAME <32 hex digits>` | Replace the full monochrome image; preserve visibility |
+| `ANIM BEGIN <frames>` | Begin staging 1–64 frames without changing playback |
+| `ANIM ADD <ms> <32 hex digits>` | Append a staged frame with a 20–60,000 ms hold |
+| `ANIM PLAY <repeat-count>` | Commit a complete upload and start playback; 0 loops forever |
+| `ANIM STOP` | Stop playback and return `frame=<32 hex digits>` for recovery |
+
+The staged `BEGIN`/`ADD`/`PLAY` commands above are internal UART commands. The
+controller serializes uploads, translating the single client `ANIM` command into
+these short requests and acknowledging the client only after `PLAY` succeeds.
+Each new `BEGIN` replaces any incomplete staging upload. Incomplete uploads and
+failed commits leave current playback intact; invalid staging state returns
+`ERR IO`. The MCU uses two fixed frame buffers and no dynamic allocation.
+`HELLO` and `PING` remain responsive during playback.
+
+Local CLI/socket commands can contain up to 4096 characters; serial requests keep
+the 128-character limit below. The CLI allows up to 120 seconds for a response,
+covering a maximum-sized recovery upload followed by a new upload. Each serial
+request retains its 750 ms response deadline.
 
 A frame contains 16 bytes: two bytes per row, top to bottom. In each row, the first
 byte contains columns 0–7, least significant bit first; the second contains columns
 8–12 in bits 0–4. Bits 5–7 of the second byte must be zero. Both hex cases are
 accepted. Invalid frames are rejected before touching the display. `OK` for a
-mutation means its display-driver call succeeded; it does not promise a whole
-physical refresh has completed.
+display mutation means its display-driver call succeeded; it does not promise a
+whole physical refresh has completed. Staging commands only acknowledge storage.
 
 Lines are limited to 128 bytes excluding LF (including optional CR). The MCU
 has a 256-byte receive ring; interrupt handling only buffers input. The main
 thread parses and executes commands and replies. Invalid/non-ASCII input or line
 and receive-buffer overflow triggers discarding through the next LF. Errors are
 `BAD_LINE`, `BAD_ID`, `BAD_ARGUMENT`, `UNKNOWN_COMMAND`, and `IO`; the controller
-adds `UNAVAILABLE` for connection, negotiation, or response failures. No debug
+adds `UNAVAILABLE` for connection, negotiation, or response failures,
+`UNSUPPORTED` for missing animation capability, and `BAD_REPLY` for a malformed
+stop response. No debug
 logs share this UART. There is no checksum, authentication, or bulk-transfer mode.
 
 The controller permits one outstanding UART request and waits at most 750 ms for
@@ -250,13 +301,14 @@ UNO Q Yocto image with Docker 29.7.2:
   without repeatedly attempting installation.
 
 The UART implementation builds for the pinned Zephyr target and ARM64 container.
-Twenty-five host tests cover the installer, protocol validation, stream recovery,
-and the real controller communicating with a simulated MCU over a pseudo-terminal.
+Host tests cover the installer, protocol validation, stream recovery, animation
+timing and atomic replacement, and the real controller communicating with a
+simulated MCU over a pseudo-terminal (including 64-frame uploads and recovery).
 The board's `/dev/ttyHS1` was verified read-only; the UART firmware has not yet been
 flashed or hardware-tested. Validate display commands, MCU-reset recovery,
 controller restart, and a physical power-cycle before deploying it broadly.
 
-The UART firmware uses 29,928 bytes of flash and 7,136 bytes of RAM. Hardware backup
+The animation-enabled UART firmware uses 30,948 bytes of flash and 9,752 bytes of RAM. Hardware backup
 and logs from development are kept in the ignored `.local/` directory; they are
 excluded from both Docker and composeapp publication. Visual appearance and a
 physical power-cycle still need confirmation at the board.

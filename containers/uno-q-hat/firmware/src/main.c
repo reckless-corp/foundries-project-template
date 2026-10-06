@@ -8,7 +8,9 @@
 #include <zephyr/sys/ring_buffer.h>
 #include <inttypes.h>
 #include <stdio.h>
+#include <string.h>
 #include "protocol.h"
+#include "animation.h"
 
 static const char hat[8][14] = {
     ".............", "....##.##....", "...#######...", "...#######...",
@@ -21,6 +23,8 @@ RING_BUF_DECLARE(rx, 256);
 K_SEM_DEFINE(rx_ready, 0, 1);
 static atomic_t overflow;
 static uint32_t boot_id;
+static struct hat_player player;
+static uint8_t last_frame[HAT_FRAME_SIZE];
 
 static void receive(const struct device *dev, void *context)
 {
@@ -48,7 +52,10 @@ static int write_frame(const uint8_t *pixels)
 	    .height = 8,
 	    .pitch = 16,
 	};
-	return display_write(display, 0, 0, &desc, pixels);
+	int rc = display_write(display, 0, 0, &desc, pixels);
+	if (!rc)
+		memcpy(last_frame, pixels, sizeof(last_frame));
+	return rc;
 }
 
 static int show_hat(void)
@@ -69,7 +76,7 @@ static int execute(const struct hat_command *cmd, char *result, size_t size,
 	case HAT_HELLO:
 		snprintf(result, size,
 			 "proto=1 firmware=" HAT_FIRMWARE_VERSION
-			 " width=13 height=8 boot=%08" PRIx32,
+			 " width=13 height=8 anim=64 boot=%08" PRIx32,
 			 boot_id);
 		return 0;
 	case HAT_PING:
@@ -77,9 +84,29 @@ static int execute(const struct hat_command *cmd, char *result, size_t size,
 			 boot_id, k_uptime_get());
 		return 0;
 	case HAT_SHOW:
-		return show_hat();
-	case HAT_FRAME:
-		return write_frame(cmd->pixels);
+	case HAT_FRAME: {
+		int rc = cmd->operation == HAT_SHOW ? show_hat()
+						    : write_frame(cmd->pixels);
+		if (!rc) {
+			player.running = false;
+			player.uploading = false;
+		}
+		return rc;
+	}
+	case HAT_ANIM_BEGIN:
+	case HAT_ANIM_ADD:
+	case HAT_ANIM_PLAY:
+	case HAT_ANIM_STOP: {
+		int rc = hat_player_command(&player, cmd, k_uptime_get(),
+					    write_frame);
+		if (!rc && cmd->operation == HAT_ANIM_STOP) {
+			snprintf(result, size, "frame=");
+			for (size_t i = 0; i < HAT_FRAME_SIZE; ++i)
+				snprintf(result + 6 + i * 2, size - 6 - i * 2,
+					 "%02x", last_frame[i]);
+		}
+		return rc;
+	}
 	case HAT_DISPLAY:
 		return cmd->visible ? display_blanking_off(display)
 				    : display_blanking_on(display);
@@ -104,9 +131,16 @@ int main(void)
 	struct hat_parser parser = {0};
 	char reply[HAT_LINE_MAX + 1];
 	for (;;) {
-		k_sem_take(&rx_ready, K_FOREVER);
+		int64_t now = k_uptime_get();
+		hat_player_tick(&player, now, write_frame);
+		k_timeout_t timeout =
+		    player.running
+			? K_MSEC(MAX(0, player.deadline - k_uptime_get()))
+			: K_FOREVER;
+		k_sem_take(&rx_ready, timeout);
 		uint8_t c;
 		for (;;) {
+			hat_player_tick(&player, k_uptime_get(), write_frame);
 			unsigned key = irq_lock();
 			if (atomic_set(&overflow, 0)) {
 				ring_buf_reset(&rx);

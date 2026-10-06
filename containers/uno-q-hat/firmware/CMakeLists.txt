@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.20.0)
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(uno_q_hat)
-target_sources(app PRIVATE src/main.c src/protocol.c)
+target_sources(app PRIVATE src/main.c src/protocol.c src/animation.c)
 # Identify the application sources/configuration used for this firmware.
 set(fingerprint "")
-foreach(input src/main.c src/protocol.c src/protocol.h prj.conf app.overlay)
+foreach(input src/main.c src/protocol.c src/protocol.h src/animation.c src/animation.h prj.conf app.overlay)
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${input}")
   file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${input}" digest)
   string(APPEND fingerprint "${digest}")

@@ -21,13 +21,16 @@ class UARTTests(unittest.TestCase):
         cls.addClassCleanup(cls.build.cleanup)
         cls.controller = str(Path(cls.build.name) / 'hatctl')
         cls.parser_test = str(Path(cls.build.name) / 'protocol-test')
+        cls.animation_test = str(Path(cls.build.name) / 'animation-test')
         cls.read_line_test = str(Path(cls.build.name) / 'read-line-test')
         for source, output in [(ROOT / 'controller/hatctl.c', cls.controller),
                                (ROOT / 'tests/read_line_test.c', cls.read_line_test),
-                               (ROOT / 'tests/protocol_test.c', cls.parser_test)]:
+                               (ROOT / 'tests/protocol_test.c', cls.parser_test),
+                               (ROOT / 'tests/animation_test.c', cls.animation_test)]:
             subprocess.run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
                             '-I', str(ROOT / 'firmware/src'), str(source),
-                            str(ROOT / 'firmware/src/protocol.c'), '-o', output], check=True)
+                            str(ROOT / 'firmware/src/protocol.c'),
+                            str(ROOT / 'firmware/src/animation.c'), '-o', output], check=True)
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -39,6 +42,8 @@ class UARTTests(unittest.TestCase):
         self.env = dict(os.environ, MCU_UART=os.ttyname(self.slave), MCU_SOCKET=self.path)
         self.boot = 1
         self.proto = 1
+        self.anim = ' anim=64'
+        self.stopped_frame = '0200' * 8
         self.silent = False
         self.noise = False
         self.reject = None
@@ -98,7 +103,9 @@ class UARTTests(unittest.TestCase):
                 if command == self.reject:
                     result = 'ERR IO'
                 elif command == 'HELLO':
-                    result = f'OK proto={self.proto} firmware=test width=13 height=8 boot={self.boot:08x}'
+                    result = f'OK proto={self.proto} firmware=test width=13 height=8{self.anim} boot={self.boot:08x}'
+                elif command == 'ANIM STOP':
+                    result = 'OK frame=' + self.stopped_frame
                 elif command == 'PING':
                     result = f'OK boot={self.boot:08x} uptime_ms=100'
                 else:
@@ -172,7 +179,7 @@ class UARTTests(unittest.TestCase):
     def test_invalid_client_input_never_reaches_uart(self):
         self.assertEqual(self.cli('PING').returncode, 0)
         for command, expected in [(b'FRAME ' + b'ffff' * 8, b'ERR BAD_ARGUMENT'),
-                                  (b'x' * 200, b'ERR BAD_LINE'),
+                                  (b'x' * 4097, b'ERR BAD_LINE'),
                                   (b'PING\x00extra', b'ERR BAD_LINE')]:
             with socket.socket(socket.AF_UNIX) as client:
                 client.settimeout(6)
@@ -183,6 +190,89 @@ class UARTTests(unittest.TestCase):
                     response += client.recv(256)
                 self.assertEqual(response.strip(), expected)
         self.assertFalse(any(c.startswith('FRAME') for c in self.commands))
+
+    def test_animation_timing_and_atomic_replacement(self):
+        subprocess.run([self.animation_test], check=True)
+
+    def test_animation_upload_and_reset_recovery(self):
+        args = ['ANIM', '3', '500:' + '0100' * 8, '250:' + '0000' * 8]
+        expected = ['ANIM BEGIN 2', 'ANIM ADD 500 ' + '0100' * 8,
+                    'ANIM ADD 250 ' + '0000' * 8, 'ANIM PLAY 3']
+        self.assertEqual(self.cli(*args).stdout, 'OK\n')
+        self.assertEqual(self.commands[-4:], expected)
+        self.assertEqual(self.cli('DISPLAY', 'OFF').returncode, 0)
+        self.boot += 1
+        start = len(self.commands)
+        self.assertEqual(self.cli('PING').returncode, 0)
+        commands = self.commands[start:]
+        hello = commands.index('HELLO')
+        self.assertEqual(commands[hello + 1:hello + 6], expected + ['DISPLAY OFF'])
+
+    def test_maximum_animation_fits_local_command_and_short_uart_lines(self):
+        frames = ['60000:' + 'ff1f' * 8] * 64
+        self.assertEqual(self.cli('ANIM', '4294967295', *frames).stdout, 'OK\n')
+        self.assertIn('ANIM BEGIN 64', self.commands)
+        self.assertEqual(self.commands.count('ANIM ADD 60000 ' + 'ff1f' * 8), 64)
+        self.assertEqual(self.commands[-1], 'ANIM PLAY 4294967295')
+        self.assertTrue(all(len(c) + 11 <= 128 for c in self.commands))
+        self.assertEqual(self.cli('ANIM', '0', *frames, frames[0]).returncode, 2)
+
+    def test_invalid_animations_do_not_upload(self):
+        valid = '100:' + '0100' * 8
+        for args in [('0',), ('-1', valid), ('4294967296', valid),
+                     ('0', '19:' + '0000' * 8), ('0', '60001:' + '0000' * 8),
+                     ('0', valid, '100:bad'), ('0', '100:' + 'ffff' * 8),
+                     ('0', valid + 'extra'), ('BEGIN', '2'), ('PLAY', '1')]:
+            self.assertEqual(self.cli('ANIM', *args).returncode, 2, args)
+        self.assertFalse(any(c.startswith('ANIM') for c in self.commands))
+        # Bypass CLI validation to exercise the daemon's independent validation.
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(6)
+            client.connect(self.path)
+            client.sendall(('ANIM 0 ' + valid + ' 100:bad\n').encode())
+            reply = b''
+            while not reply.endswith(b'\n'):
+                reply += client.recv(256)
+            self.assertEqual(reply, b'ERR BAD_ARGUMENT\n')
+        self.assertFalse(any(c.startswith('ANIM') for c in self.commands))
+
+    def test_rejected_upload_preserves_previous_animation(self):
+        self.assertEqual(self.cli('ANIM', '0', '100:' + '0100' * 8).returncode, 0)
+        self.reject = 'ANIM ADD 200 ' + '0200' * 8
+        self.assertEqual(self.cli('ANIM', '2', '200:' + '0200' * 8).stdout, 'ERR IO\n')
+        self.reject = None
+        self.boot += 1
+        start = len(self.commands)
+        self.assertEqual(self.cli('PING').returncode, 0)
+        self.assertIn('ANIM ADD 100 ' + '0100' * 8, self.commands[start:])
+        self.assertNotIn('ANIM PLAY 2', self.commands)
+
+    def test_animation_stop_restores_actual_stopped_frame(self):
+        self.assertEqual(self.cli('ANIM', '0', '100:' + '0100' * 8).returncode, 0)
+        self.assertEqual(self.cli('ANIM', 'STOP').stdout, 'OK\n')
+        self.boot += 1
+        start = len(self.commands)
+        self.assertEqual(self.cli('PING').returncode, 0)
+        self.assertIn('FRAME ' + self.stopped_frame, self.commands[start:])
+        self.assertFalse(any(c.startswith('ANIM') for c in self.commands[start:]))
+
+    def test_static_command_replaces_animation_for_recovery(self):
+        for args in [('FRAME', '0400' * 8), ('SHOW', 'HAT')]:
+            self.assertEqual(self.cli('ANIM', '0', '100:' + '0100' * 8).returncode, 0)
+            self.assertEqual(self.cli(*args).returncode, 0)
+            self.boot += 1
+            start = len(self.commands)
+            self.assertEqual(self.cli('PING').returncode, 0)
+            self.assertIn(' '.join(args), self.commands[start:])
+            self.assertFalse(any(c.startswith('ANIM') for c in self.commands[start:]))
+
+    def test_old_firmware_reports_unsupported_before_upload(self):
+        self.assertEqual(self.cli('PING').returncode, 0)
+        self.anim = ''
+        self.boot += 1
+        self.assertEqual(self.cli('ANIM', '0', '100:' + '0100' * 8).stdout,
+                         'ERR UNSUPPORTED\n')
+        self.assertFalse(any(c.startswith('ANIM') for c in self.commands))
 
     def test_second_daemon_cannot_remove_live_socket(self):
         result = self.cli('daemon')

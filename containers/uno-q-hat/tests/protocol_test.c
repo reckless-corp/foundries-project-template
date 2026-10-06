@@ -47,6 +47,16 @@ int main(void)
 	check(&p, "5 FRAME ff1fff1fff1fff1fff1fff1fff1fff1f\n", "5 OK done\n");
 	assert(last.operation == HAT_FRAME && last.pixels[0] == 255 &&
 	       last.pixels[15] == 31);
+	check(&p, "20 ANIM BEGIN 64\n", "20 OK done\n");
+	assert(last.operation == HAT_ANIM_BEGIN && last.value == 64);
+	check(&p, "21 ANIM ADD 20 01000000000000000000000000000000\n",
+	      "21 OK done\n");
+	assert(last.operation == HAT_ANIM_ADD && last.value == 20 &&
+	       last.pixels[0] == 1);
+	check(&p, "22 ANIM PLAY 4294967295\n", "22 OK done\n");
+	assert(last.operation == HAT_ANIM_PLAY && last.value == UINT32_MAX);
+	check(&p, "23 ANIM STOP\n", "23 OK done\n");
+	assert(last.operation == HAT_ANIM_STOP);
 	unsigned before = calls;
 	check(&p, "0 PING\n", "0 ERR BAD_ID\n");
 	check(&p, "4294967296 PING\n", "0 ERR BAD_ID\n");
@@ -61,6 +71,21 @@ int main(void)
 	check(&p, "8 HELLO extra\n", "8 ERR BAD_ARGUMENT\n");
 	check(&p, "9 TOGGLE\n", "9 ERR UNKNOWN_COMMAND\n");
 	check(&p, "9 PI\rNG\n", "9 ERR UNKNOWN_COMMAND\n");
+	check(&p, "24 ANIM BEGIN 0\n", "24 ERR BAD_ARGUMENT\n");
+	check(&p, "24 ANIM BEGIN 65\n", "24 ERR BAD_ARGUMENT\n");
+	check(&p, "24 ANIM PLAY -1\n", "24 ERR BAD_ARGUMENT\n");
+	check(&p, "24 ANIM PLAY 4294967296\n", "24 ERR BAD_ARGUMENT\n");
+	check(&p, "24 ANIM PLAY 1 extra\n", "24 ERR BAD_ARGUMENT\n");
+	check(&p, "24 ANIM STOP extra\n", "24 ERR BAD_ARGUMENT\n");
+	check(&p, "24 ANIM ADD 19 01000000000000000000000000000000\n",
+	      "24 ERR BAD_ARGUMENT\n");
+	check(&p, "24 ANIM ADD 60001 01000000000000000000000000000000\n",
+	      "24 ERR BAD_ARGUMENT\n");
+	check(&p, "24 ANIM ADD 20 01ff0000000000000000000000000000\n",
+	      "24 ERR BAD_ARGUMENT\n");
+	check(&p, "24 ANIM ADD 20 0100000000000000000000000000000g\n",
+	      "24 ERR BAD_ARGUMENT\n");
+	check(&p, "24 ANIM ADD 20 01\n", "24 ERR BAD_ARGUMENT\n");
 	assert(calls == before);
 	char reply[HAT_LINE_MAX + 1];
 	/* Fragmentation, overflow, invalid bytes, and explicit UART resync. */

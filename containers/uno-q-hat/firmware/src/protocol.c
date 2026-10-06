@@ -15,6 +15,39 @@ static int hex(unsigned char c)
 	return -1;
 }
 
+/* Strict unsigned decimal, with overflow and delimiter checks by the caller. */
+static bool number(const char **cursor, uint32_t *value)
+{
+	const char *s = *cursor;
+	uint32_t n = 0;
+	if (*s < '0' || *s > '9')
+		return false;
+	while (*s >= '0' && *s <= '9') {
+		unsigned d = (unsigned)(*s++ - '0');
+		if (n > (UINT32_MAX - d) / 10)
+			return false;
+		n = n * 10 + d;
+	}
+	*cursor = s;
+	*value = n;
+	return true;
+}
+
+static bool pixels(const char *s, uint8_t *out)
+{
+	if (strlen(s) < HAT_FRAME_SIZE * 2)
+		return false;
+	for (size_t i = 0; i < HAT_FRAME_SIZE; ++i) {
+		int hi = hex(s[i * 2]), lo = hex(s[i * 2 + 1]);
+		if (hi < 0 || lo < 0)
+			return false;
+		out[i] = (uint8_t)((hi << 4) | lo);
+		if ((i & 1) && (out[i] & 0xe0))
+			return false;
+	}
+	return true;
+}
+
 const char *hat_parse_command(const char *s, struct hat_command *cmd)
 {
 	memset(cmd, 0, sizeof(*cmd));
@@ -31,19 +64,30 @@ const char *hat_parse_command(const char *s, struct hat_command *cmd)
 		cmd->operation = HAT_FRAME;
 		if (strlen(s + 6) != HAT_FRAME_SIZE * 2)
 			return "BAD_ARGUMENT";
-		for (size_t i = 0; i < HAT_FRAME_SIZE; ++i) {
-			int high = hex(s[6 + i * 2]), low = hex(s[7 + i * 2]);
-			if (high < 0 || low < 0)
-				return "BAD_ARGUMENT";
-			cmd->pixels[i] = (uint8_t)((high << 4) | low);
-			if ((i & 1) && (cmd->pixels[i] & 0xe0))
-				return "BAD_ARGUMENT";
-		}
+		if (!pixels(s + 6, cmd->pixels))
+			return "BAD_ARGUMENT";
+	} else if (!strcmp(s, "ANIM STOP")) {
+		cmd->operation = HAT_ANIM_STOP;
+	} else if (!strncmp(s, "ANIM BEGIN ", 11) ||
+		   !strncmp(s, "ANIM PLAY ", 10)) {
+		bool begin = s[5] == 'B';
+		s += begin ? 11 : 10;
+		cmd->operation = begin ? HAT_ANIM_BEGIN : HAT_ANIM_PLAY;
+		if (!number(&s, &cmd->value) || *s ||
+		    (begin && (!cmd->value || cmd->value > HAT_ANIM_MAX)))
+			return "BAD_ARGUMENT";
+	} else if (!strncmp(s, "ANIM ADD ", 9)) {
+		cmd->operation = HAT_ANIM_ADD;
+		s += 9;
+		if (!number(&s, &cmd->value) || cmd->value < 20 ||
+		    cmd->value > 60000 || *s != ' ' || strlen(s + 1) != 32 ||
+		    !pixels(s + 1, cmd->pixels))
+			return "BAD_ARGUMENT";
 	} else {
 		/* Known verbs with missing/extra arguments are distinguishable.
 		 */
-		static const char *const verbs[] = {"HELLO", "PING", "SHOW",
-						    "DISPLAY", "FRAME"};
+		static const char *const verbs[] = {"HELLO",   "PING",	"SHOW",
+						    "DISPLAY", "FRAME", "ANIM"};
 		for (size_t i = 0; i < sizeof(verbs) / sizeof(verbs[0]); ++i) {
 			size_t n = strlen(verbs[i]);
 			if (!strncmp(s, verbs[i], n) &&
@@ -53,6 +97,32 @@ const char *hat_parse_command(const char *s, struct hat_command *cmd)
 		return "UNKNOWN_COMMAND";
 	}
 	return NULL;
+}
+
+const char *hat_parse_client(const char *s, struct hat_command *cmd,
+			     struct hat_animation *animation)
+{
+	if (strncmp(s, "ANIM ", 5) || !strcmp(s, "ANIM STOP"))
+		return hat_parse_command(s, cmd);
+	memset(cmd, 0, sizeof(*cmd));
+	memset(animation, 0, sizeof(*animation));
+	cmd->operation = HAT_ANIM_PLAY;
+	s += 5;
+	if (!number(&s, &animation->repeats) || *s != ' ')
+		return "BAD_ARGUMENT";
+	while (*s == ' ') {
+		++s;
+		if (animation->count == HAT_ANIM_MAX)
+			return "BAD_ARGUMENT";
+		struct hat_step *step = &animation->steps[animation->count];
+		if (!number(&s, &step->duration_ms) || step->duration_ms < 20 ||
+		    step->duration_ms > 60000 || *s != ':' ||
+		    !pixels(s + 1, step->pixels))
+			return "BAD_ARGUMENT";
+		s += 33;
+		++animation->count;
+	}
+	return *s || !animation->count ? "BAD_ARGUMENT" : NULL;
 }
 
 void hat_resync(struct hat_parser *p)
