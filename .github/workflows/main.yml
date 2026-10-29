@@ -1,0 +1,81 @@
+name: ci-main
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  NFS_ROOT: ${{ vars.NFS_ROOT || '/var/code/reckless-corp/storage' }}
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: [self-hosted, Linux, X64]
+    outputs:
+      kas_cache: ${{ steps.plan.outputs.kas_cache }}
+      kas_container: ${{ steps.plan.outputs.kas_container }}
+      composeapps_archive: ${{ steps.plan.outputs.composeapps_archive }}
+      composeapps_needs_build: ${{ steps.plan.outputs.composeapps_needs_build }}
+      yocto_archive: ${{ steps.plan.outputs.yocto_archive }}
+      yocto_needs_build: ${{ steps.plan.outputs.yocto_needs_build }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve what changed
+        id: plan
+        run: |
+          set -ex
+
+          archive="${NFS_ROOT%/}/archive"
+          kas_cache="${NFS_ROOT%/}/kas"
+          kas_container="${kas_cache}/kas-container"
+          echo "kas_cache=${kas_cache}" >> "${GITHUB_OUTPUT}"
+          echo "kas_container=${kas_container}" >> "${GITHUB_OUTPUT}"
+
+          # We maintain a content-addressable-storage directory, casdir, for build
+          # artifacts. When we do a build we fingerprint the:
+          #  * git-hash of that component (the yocto and composeapps directories)
+          #  * git-hash of the workflow file that built it
+          # If that directory exists, we've already built the content we need.
+          # Otherwise we need to build the component
+          casdir="${archive}/${{ github.event.repository.name }}"
+          composeapps_hash="$(git rev-parse HEAD:composeapps)_$(git rev-parse HEAD:.github/workflows/composeapps.yml)"
+          yocto_hash="$(git rev-parse HEAD:yocto)-_(git rev-parse HEAD:.github/workflows/yocto.yml)"
+          composeapps_archive="${casdir}/composeapps/${composeapps_hash}"
+          echo "composeapps_archive=${composeapps_archive}" >> "${GITHUB_OUTPUT}"
+          yocto_archive="${casdir}/yocto/${yocto_hash}"
+          echo "yocto_archive=${yocto_archive}" >> "${GITHUB_OUTPUT}"
+
+          if [ ! -d "${composeapps_archive}" ] ; then
+            echo "ComposeApps build required"
+            echo "composeapps_needs_build=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+          if [ ! -d "${yocto_archive}" ] ; then
+            echo "Yocto build required"
+            echo "yocto_needs_build=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+  composeapps:
+    name: Build ComposeApps
+    needs: plan
+    if: needs.plan.outputs.composeapps_needs_build == 'true'
+    uses: ./.github/workflows/composeapps.yml
+    with:
+      archive: ${{ needs.plan.outputs.composeapps_archive }}
+
+  yocto:
+    name: Build Yocto
+    needs: plan
+    if: needs.plan.outputs.yocto_needs_build == 'true'
+    uses: ./.github/workflows/yocto.yml
+    with:
+      archive: ${{ needs.plan.outputs.yocto_archive }}
+      kas_cache: ${{ needs.plan.outputs.kas_cache }}
+      kas_container: ${{ needs.plan.outputs.kas_container }}
