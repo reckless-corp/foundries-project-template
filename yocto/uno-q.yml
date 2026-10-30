@@ -11,9 +11,9 @@ local_conf_header:
   uno-q-desktop: |
     # Keep core-image-full-cmdline and the Foundries services; add only the
     # desktop/runtime packages instead of qcom-multimedia-image's media stack.
-    DISTRO_FEATURES:append = " wayland opengl pam"
-    DISTRO_FEATURES:remove = "x11"
+    DISTRO_FEATURES:append = " wayland opengl pam x11"
     IMAGE_INSTALL:append = " weston weston-init liberation-fonts gtk+3"
+    IMAGE_INSTALL:append = " libx11"
     # Matrix owns tty1 and draws directly to the framebuffer.
     IMAGE_INSTALL:remove = "matrix-console"
     # Direct package installation does not enable the weston image feature,
