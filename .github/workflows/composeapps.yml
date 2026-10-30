@@ -9,18 +9,153 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 jobs:
-  composeapps:
-    name: Build ComposeApps
+  containers:
+    name: Containers ${{ matrix.docker_dir }}
+    runs-on: [self-hosted, Linux, X64]
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - docker_dir: matrix
+            target_platforms: linux/amd64,linux/arm64
+          - docker_dir: led-matrix-anim
+            target_platforms: linux/arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set short git commit SHA
+        id: tag
+        run: |
+          calculatedSha=$(git rev-parse --short ${{ github.sha }})
+          echo "short_sha=$calculatedSha" >> $GITHUB_OUTPUT
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Login to registry
+        uses: docker/login-action@v4
+        with:
+          registry: https://ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push docker image
+        id: docker_build
+        uses: docker/build-push-action@v7
+        with:
+          push: true
+          platforms: ${{ matrix.target_platforms }}
+          context: "{{ defaultContext }}:composeapps/${{ matrix.docker_dir }}"
+          tags: "ghcr.io/${{ github.repository_owner }}/${{ matrix.docker_dir }}:${{ steps.tag.outputs.short_sha }}"
+
+      - name: Save pinned image URI
+        run: |
+          mkdir -p pinned
+          echo "ghcr.io/${{ github.repository_owner }}/${{ matrix.docker_dir }}@${{ steps.docker_build.outputs.digest }}" > "pinned/${{ matrix.docker_dir }}"
+      - name: Upload pinned image URI
+        uses: actions/upload-artifact@v7
+        with:
+          name: pinned-${{ matrix.docker_dir }}
+          path: pinned
+          if-no-files-found: error
+
+
+  apps:
+    name: Compose Apps
+    needs: containers
+    runs-on: [self-hosted, Linux, X64]
+    env:
+      ARCHIVE: ${{ inputs.archive }}
+      COMPOSECTL: /var/code/reckless-corp/storage/composectl_v97
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: matrix
+            images: matrix
+            platforms: amd64,arm64
+          - app: led-matrix-anim
+            images: led-matrix-anim
+            platforms: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Login to registry
+        uses: docker/login-action@v4
+        with:
+          registry: https://ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download pinned image URIs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pinned-*
+          path: pinned
+          merge-multiple: true
+
+      - name: Composectl Setup
+        run: |
+          set -ex
+          if [ ! -x "${COMPOSECTL}" ] ; then
+            wget -O ${COMPOSECTL} https://github.com/foundriesio/composeapp/releases/download/v97.0.1/composectl_97.0.1_linux_amd64
+            chmod +x "${COMPOSECTL}"
+          fi
+
+      - name: Build and push app
+        id: build
+        working-directory: composeapps/${{ matrix.app }}
+        run: |
+          set -ex
+
+          tag="${{ github.run_number }}_${GITHUB_SHA:0:12}"
+          pinned_args=""
+          uris=""
+          for img in ${{ matrix.images }} ; do
+            uri="$(cat "${GITHUB_WORKSPACE}/pinned/${img}")"
+            uris="${uris:+${uris},}${uri}"
+          done
+          if [ -n "${uris}" ] ; then
+            pinned_args="--pinned-images ${uris}"
+          fi
+
+          ${COMPOSECTL} publish -d app.hash ${pinned_args} ghcr.io/${{ github.repository_owner }}/${{ matrix.app }}-app:${tag} ${{ matrix.platforms }}
+          uri="ghcr.io/${{ github.repository_owner}}/${{ matrix.app }}-app@$(cat app.hash)"
+          archive="${ARCHIVE}.tmp"
+          mkdir -p ${archive}
+
+          IFS=',' read -r -a platforms <<< "${{ matrix.platforms }}"
+          for platform in "${platforms[@]}" ; do
+            echo "::group::Pull for ${platform}"
+            ${COMPOSECTL} pull -i ${archive} -s ${archive} -a ${platform} "${uri}"
+            echo "::endgroup::"
+          done
+
+          mkdir -p "${GITHUB_WORKSPACE}/app-uris"
+          echo "${uri}" > "${GITHUB_WORKSPACE}/app-uris/${{ matrix.app }}"
+
+      - name: Upload app URI
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-uri-${{ matrix.app }}
+          path: app-uris
+          if-no-files-found: error
+
+  archive:
+    name: Archive
+    needs: apps
     runs-on: [self-hosted, Linux, X64]
     env:
       ARCHIVE: ${{ inputs.archive }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
       - name: Archive
         run: |
           set -ex
-          mkdir -p "${ARCHIVE}"
+
+          mv "${ARCHIVE}.tmp" ${ARCHIVE}
+          echo "${{ github.run_number }}" > ${ARCHIVE}/gh-number

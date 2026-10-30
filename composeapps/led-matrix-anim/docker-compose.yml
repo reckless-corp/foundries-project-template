@@ -1,0 +1,37 @@
+services:
+  matrix:
+    image: ghcr.io/reckless-corp/led-matrix-anim
+    build: .
+    platform: linux/arm64
+    init: true
+    command: [serve]
+    devices:
+      - /dev/gpiochip1:/dev/gpiochip1
+      - ${MCU_UART_DEVICE:-/dev/ttyHS1}:/dev/uno-q-mcu
+    environment:
+      MCU_UART: /dev/uno-q-mcu
+    volumes:
+      - /sys/firmware/devicetree/base:/board:ro
+      - firmware-backup:/state
+      - control-socket:/run/led-matrix-anim
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, led-matrix-animctl, PING]
+      interval: 10s
+      timeout: 8s
+      start_period: 5m
+      retries: 1
+
+volumes:
+  control-socket:
+  firmware-backup:
+    # Keep the legacy name to preserve the original backup and lock across upgrades.
+    name: uno-q-hat_firmware-backup

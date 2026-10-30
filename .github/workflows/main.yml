@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 env:
   NFS_ROOT: ${{ vars.NFS_ROOT || '/var/code/reckless-corp/storage' }}

@@ -1,0 +1,4 @@
+*
+!docker-compose.yml
+!animations/
+!animations/*.sh

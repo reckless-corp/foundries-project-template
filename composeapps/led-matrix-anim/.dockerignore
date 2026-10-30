@@ -1,0 +1,6 @@
+tests
+README.md
+__pycache__
+build
+*.tar
+.local
