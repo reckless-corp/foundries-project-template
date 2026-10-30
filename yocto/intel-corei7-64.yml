@@ -1,0 +1,48 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/siemens/kas/master/kas/schema-kas.json
+
+header:
+  version: 14
+  includes:
+    - repo: meta-foundries
+      file: ci/include/base.yml
+    - repo: meta-foundries
+      file: ci/include/nodistro.yml
+    - common.yml
+
+repos:
+  meta-intel:
+    url: https://git.yoctoproject.org/meta-intel
+    commit: fcd2544222aa8e2f6caf100b854971cf1618a8fe  # wrynose branch
+    layers:
+      .:
+
+machine: intel-corei7-64
+
+local_conf_header:
+  intel-packages: |
+    # BINFMT_MISC is modular; explicitly install it in the root filesystem.
+    IMAGE_INSTALL:append = " git kernel-module-binfmt-misc systemd-binfmt"
+    # Python virtual environments need ensurepip to bootstrap their own pip.
+    IMAGE_INSTALL:append = " python3-core python3-venv python3-ensurepip python3-pip"
+    # NFS server userspace tools, including exportfs.
+    IMAGE_INSTALL:append = " nfs-utils"
+
+  intel-kvm: |
+    # Enable host virtualization and install the modules in the root filesystem.
+    KERNEL_FEATURES:append:pn-linux-intel = " features/kvm/qemu-kvm-enable.scc"
+    IMAGE_INSTALL:append = " kernel-module-kvm kernel-module-kvm-intel kernel-module-kvm-amd"
+    KERNEL_MODULE_AUTOLOAD:append:pn-linux-intel = " kvm_intel kvm_amd"
+
+  intel-vm-networking: |
+    # MACVLAN is built in; only the modular drivers have installable packages.
+    IMAGE_INSTALL:append = " kernel-module-tun kernel-module-macvtap kernel-module-tap"
+    KERNEL_MODULE_AUTOLOAD:append:pn-linux-intel = " tun macvtap"
+
+  sota-boot: |
+    OSTREE_BOOTLOADER = "grub"
+    EFI_PROVIDER = "grub-efi"
+    WKS_FILE:sota = "efiimage-sota.wks.in"
+    IMAGE_BOOT_FILES:sota = ""
+    IMAGE_FSTYPES:append:pn-core-image-full-cmdline = " wic wic.qcow2"
+    OSTREE_KERNEL_ARGS = "console=${KERNEL_CONSOLE} ${OSTREE_KERNEL_ARGS_COMMON}"
+    EXTRA_IMAGEDEPENDS:append = " ovmf"

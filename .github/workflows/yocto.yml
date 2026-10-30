@@ -18,17 +18,74 @@ permissions:
 
 jobs:
   yocto:
-    name: Build Yocto
     runs-on: [self-hosted, Linux, X64, yocto]
     env:
       ARCHIVE: ${{ inputs.archive }}
       KAS_CACHE: ${{ inputs.kas_cache }}
       KAS_CONTAINER: ${{ inputs.kas_container }}
 
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: intel-corei7-64
+            artifacts: >-
+              core-image-full-cmdline-intel-corei7-64.rootfs.spdx.json
+              core-image-full-cmdline-intel-corei7-64.rootfs.wic.zst
+              core-image-full-cmdline-intel-corei7-64.rootfs.wic.qcow2
+              ovmf*
+          - name: uno-q
+            artifacts: >-
+              core-image-full-cmdline-uno-q.rootfs.qcomflash
+              core-image-full-cmdline-uno-q.rootfs.spdx.json
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Kas Setup
+        run: |
+          set -ex
+          if [ ! -x "${KAS_CONTAINER}" ] ; then
+            wget -O ${KAS_CONTAINER} https://raw.githubusercontent.com/siemens/kas/refs/tags/5.5/kas-container
+            chmod +x "${KAS_CONTAINER}"
+          fi
+
+      - name: Kas Build
+        run: |
+          set -ex
+
+          cd yocto
+
+          export DL_DIR=${KAS_CACHE}/downloads
+          export SSTATE_DIR=${KAS_CACHE}/sstate-cache
+          export KAS_WORK_DIR=`pwd`/.kas-work
+          mkdir -p ${KAS_WORK_DIR}/build/conf ${DL_DIR} ${SSTATE_DIR}
+
+          ${KAS_CONTAINER} build ${{ matrix.name }}.yml
+
       - name: Archive
         run: |
           set -ex
-          mkdir -p "${ARCHIVE}"
+          archive="${ARCHIVE}.tmp/${{ matrix.name }}"
+          mkdir -p "${archive}"
+
+          cd yocto/.kas-work/build/tmp/deploy/images/${{ matrix.name }}
+          ls
+          tar -czf "${archive}/ostree_repo.tgz" ostree_repo
+          cp -rL ${{ matrix.artifacts }} "${archive}/"
+
+  archive:
+    name: Archive
+    needs: [yocto]
+    runs-on: [self-hosted, Linux, X64]
+    env:
+      ARCHIVE: ${{ inputs.archive }}
+
+    steps:
+      - name: Archive
+        run: |
+          set -ex
+
+          mv "${ARCHIVE}.tmp" ${ARCHIVE}
+          echo "${{ github.run_number }}" > ${ARCHIVE}/gh-number

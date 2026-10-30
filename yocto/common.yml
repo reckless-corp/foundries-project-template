@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/siemens/kas/master/kas/schema-kas.json
+
+header:
+  version: 14
+
+repos:
+  project:
+    layers:
+      yocto/meta-project:
+
+  meta-foundries:
+    url: https://github.com/foundriesio/meta-foundries
+    commit: 2b0afacf9abf12d589de87f0dc1f988a5cf540f0
+    branch: wrynose
+
+local_conf_header:
+  ci: |
+    BB_SIGNATURE_HANDLER = "OEBasicHash"
+    SOTA_SKIP_CRED_WARN = "1"
+
+  rm-work: |
+    RM_WORK_EXCLUDE += "fioconfig aktualizr-lite composectl fio-device-register"
+
+  fio: |
+    FIO_DEVICE_API = "https://dg.gavelci.us/v1/devices"
+    FIO_OAUTH_API = "https://dg.gavelci.us/oauth2"
+    IMAGE_INSTALL:append = " sudo matrix-console"
