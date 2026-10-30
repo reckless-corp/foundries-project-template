@@ -1,0 +1,96 @@
+name: Assemble Update
+
+on:
+  push:
+    tags:
+      - 'update_*'
+
+permissions:
+  contents: read
+
+env:
+  NFS_ROOT: ${{ vars.NFS_ROOT || '/var/code/reckless-corp/storage' }}
+  FIOCLI: /var/code/reckless-corp/storage/fiocli
+  UPDATE_SERVER_URL: ${{ vars.UPDATE_SERVER_URL || secrets.UPDATE_SERVER_URL }}
+  UPDATE_SERVER_TOKEN: ${{ secrets.UPDATE_SERVER_TOKEN }}
+
+jobs:
+  archive:
+    name: Archive Update
+    runs-on: [self-hosted, Linux, X64]
+
+    steps:
+      - name: Validate configuration
+        run: |
+          missing=0
+          if [ -z "$UPDATE_SERVER_URL" ]; then
+            echo "::error::Missing UPDATE_SERVER_URL: set a repository or update-server environment variable or secret."
+            missing=1
+          fi
+          if [ -z "$UPDATE_SERVER_TOKEN" ]; then
+            echo "::error::Missing UPDATE_TOKEN: set a repository secret."
+            missing=1
+          fi
+          exit "$missing"
+
+      - name: Fiocli Setup
+        run: |
+          set -ex
+          if [ ! -x "${FIOCLI}" ] ; then
+            wget -O ${FIOCLI} https://github.com/foundriesio/update-server/releases/download/v1.0-rc3/fiocli-linux-amd64
+            chmod +x "${FIOCLI}"
+          fi
+
+      - name: Assemble update archive
+        env:
+          REPOSITORY_NAME: ${{ github.event.repository.name }}
+        run: |
+          set -ex
+
+          archive="${NFS_ROOT%/}/archive"
+          casdir="${archive}/${REPOSITORY_NAME}"
+          update_name="${GITHUB_REF_NAME#update_}"
+
+          # Match the content fingerprints used by main.yml's Plan job.
+          composeapps_hash="$(git rev-parse HEAD:composeapps)_$(git rev-parse HEAD:.github/workflows/composeapps.yml)"
+          yocto_hash="$(git rev-parse HEAD:yocto)_$(git rev-parse HEAD:.github/workflows/yocto.yml)"
+          composeapps_archive="${casdir}/composeapps/${composeapps_hash}"
+          yocto_archive="${casdir}/yocto/${yocto_hash}"
+
+          for source in "${composeapps_archive}" "${yocto_archive}"; do
+            if [ ! -d "${source}" ]; then
+              echo "Missing build archive: ${source}" >&2
+              exit 1
+            fi
+          done
+
+          cat >fiocli.yml <<EOF
+          active_context: fio
+          contexts:
+            fio:
+              url: ${UPDATE_SERVER_URL}
+              token: ${UPDATE_SERVER_TOKEN}
+          EOF
+          fiocli="${FIOCLI} -f `pwd`/fiocli.yml"
+
+          commit_sha="$(git rev-parse HEAD)"
+          update_archive="${archive}/updates/${GITHUB_REF_NAME}_${commit_sha}"
+          mkdir -p "${update_archive}"
+          ln -sfnT "${composeapps_archive}" "${update_archive}/composeapps"
+          ln -sfnT "${yocto_archive}" "${update_archive}/yocto"
+
+          cd ${update_archive}
+          for x in `find -L ./yocto -mindepth 1 -maxdepth 1 -type d -printf '%f\n'` ; do
+              mkdir $x
+              tar -C $x -xzf ./yocto/$x/ostree_repo.tgz
+              cp -a --reflink=auto ${composeapps_archive} ./${x}/apps
+
+              tag=$x
+              extra=""
+              if [ $x == "intel-corei7-64" ] ; then
+                  tag="reckless-corp"
+                  extra="--apps matrix-app=$(ls ${x}/apps/apps/matrix-app/)"
+              fi
+
+              ${fiocli} updates upload ${tag} ${update_name}_${x} $x ${extra}
+          done
