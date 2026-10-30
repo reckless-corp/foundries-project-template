@@ -46,7 +46,7 @@ jobs:
           # Otherwise we need to build the component
           casdir="${archive}/${{ github.event.repository.name }}"
           composeapps_hash="$(git rev-parse HEAD:composeapps)_$(git rev-parse HEAD:.github/workflows/composeapps.yml)"
-          yocto_hash="$(git rev-parse HEAD:yocto)-_(git rev-parse HEAD:.github/workflows/yocto.yml)"
+          yocto_hash="$(git rev-parse HEAD:yocto)_$(git rev-parse HEAD:.github/workflows/yocto.yml)"
           composeapps_archive="${casdir}/composeapps/${composeapps_hash}"
           echo "composeapps_archive=${composeapps_archive}" >> "${GITHUB_OUTPUT}"
           yocto_archive="${casdir}/yocto/${yocto_hash}"
