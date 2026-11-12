@@ -1,0 +1,9 @@
+services:
+  matrix:
+    image: ghcr.io/reckless-corp/matrix
+    build:
+      context: .
+      platforms: [linux/amd64, linux/arm64]
+    ports:
+      - "8080:8080"
+    restart: unless-stopped

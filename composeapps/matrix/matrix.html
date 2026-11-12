@@ -1,0 +1,67 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>matrix</title>
+<style>
+html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+canvas { display: block; }
+#mascot {
+	position: fixed;
+	top: 50%; left: 50%;
+	transform: translate(-50%, -50%);
+	margin: 0;
+	font: clamp(8px, 2.4vw, 20px)/1.2 monospace;
+	color: rgba(225, 255, 225, 0.9);
+	text-shadow: 0 0 6px #0f0;
+	pointer-events: none;
+}
+</style>
+</head>
+<body>
+<canvas id="c" aria-hidden="true"></canvas>
+<pre id="mascot" role="img" aria-label="Thumbs up guy">            _  _
+           | \/ |
+        \__|____|__/
+          |  o  o|           Thumbs Up
+          |___\/_|_____||_
+          |       _____|__|
+          |      |
+          |______|
+          | |  | |
+          | |  | |
+          |_|  |_|</pre>
+<script>
+const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789$+-*/=%#&@<>:;|^~";
+const size = 16;
+const c = document.getElementById("c");
+const ctx = c.getContext("2d");
+let drops = [];
+
+function resize() {
+	c.width = innerWidth;
+	c.height = innerHeight;
+	drops = Array.from({ length: Math.ceil(c.width / size) },
+		() => Math.floor(Math.random() * -c.height / size));
+}
+
+function frame() {
+	// translucent black over the last frame makes trails fade out
+	ctx.fillStyle = "rgba(0, 0, 0, 0.08)";
+	ctx.fillRect(0, 0, c.width, c.height);
+	ctx.font = size + "px monospace";
+	drops.forEach((y, i) => {
+		const k = chars[Math.floor(Math.random() * chars.length)];
+		ctx.fillStyle = Math.random() < 0.1 ? "#dfd" : "#0f0";
+		ctx.fillText(k, i * size, y * size);
+		drops[i] = y * size > c.height && Math.random() > 0.975 ? 0 : y + 1;
+	});
+}
+
+addEventListener("resize", resize);
+resize();
+setInterval(frame, 50);
+</script>
+</body>
+</html>
