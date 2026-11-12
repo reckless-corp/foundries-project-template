@@ -1,0 +1,4 @@
+core-image-full-cmdline-qemux86-64.rootfs.spdx.json
+core-image-full-cmdline-qemux86-64.rootfs.wic
+core-image-full-cmdline-qemux86-64.rootfs.wic.qcow2
+ovmf*

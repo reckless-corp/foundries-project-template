@@ -1,0 +1,123 @@
+name: Build Yocto
+
+on:
+  workflow_call:
+    inputs:
+      archive:
+        required: true
+        type: string
+      kas_cache:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: [self-hosted, Linux, X64]
+    outputs:
+      matrix: ${{ steps.discover.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Discover Yocto builds
+        id: discover
+        run: |
+          set -euo pipefail
+          machines=()
+          while IFS= read -r -d '' config; do
+            machine="${config##*/}"
+            machine="${machine%.yml}"
+            if [[ ! "$machine" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+              # this is not JSON safe for our matrix= logic below
+              echo "Invalid machine name: $machine" >&2
+              exit 1
+            fi
+            if [[ ! -s "yocto/${machine}.archive" ]]; then
+              echo "Missing or empty archive list: yocto/${machine}.archive" >&2
+              exit 1
+            fi
+            machines+=("$machine")
+          done < <(git ls-files -z -- ':(top,glob)yocto/*.yml')
+          if (( ${#machines[@]} == 0 )); then
+            echo "No tracked yocto/*.yml build configurations found" >&2
+            exit 1
+          fi
+          printf -v names '"%s",' "${machines[@]}"
+          echo "matrix={\"name\":[${names%,}]}" >> "$GITHUB_OUTPUT"
+
+  yocto:
+    needs: discover
+    runs-on: [self-hosted, Linux, X64, yocto]
+    env:
+      ARCHIVE: ${{ inputs.archive }}
+      KAS_CACHE: ${{ inputs.kas_cache }}
+      KAS_CONTAINER: ${{ inputs.kas_cache }}/kas-container-5.5
+
+    strategy:
+      fail-fast: true
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Kas Setup
+        run: |
+          set -ex
+          if [ ! -x "${KAS_CONTAINER}" ] ; then
+            wget -O ${KAS_CONTAINER} https://raw.githubusercontent.com/siemens/kas/refs/tags/5.5/kas-container
+            chmod +x "${KAS_CONTAINER}"
+          fi
+
+      - name: Kas Build
+        run: |
+          set -ex
+
+          cd yocto
+
+          export DL_DIR=${KAS_CACHE}/downloads
+          export SSTATE_DIR=${KAS_CACHE}/sstate-cache
+          export KAS_WORK_DIR=`pwd`/.kas-work
+          mkdir -p ${KAS_WORK_DIR}/build/conf ${DL_DIR} ${SSTATE_DIR}
+
+          ${KAS_CONTAINER} build ${{ matrix.name }}.yml
+
+      - name: Archive
+        run: |
+          set -ex
+          archive="${ARCHIVE}.tmp/${{ matrix.name }}"
+          mkdir -p "${archive}"
+
+          cd yocto/.kas-work/build/tmp/deploy/images/${{ matrix.name }}
+          ls
+          tar -czf "${archive}/ostree_repo.tgz" ostree_repo
+          # A cheap checksum-to-CAS index for static delta source lookup.
+          cp "ostree_repo/refs/heads/${{ matrix.name }}" "${archive}/ostree-commit"
+          # One filename or glob per line, relative to the deploy directory.
+          while IFS= read -r pattern || [[ -n "$pattern" ]]; do
+            [[ -z "$pattern" || "$pattern" == \#* ]] && continue
+            mapfile -t matches < <(compgen -G "$pattern" || true)
+            if (( ${#matches[@]} == 0 )); then
+              echo "Missing artifact: $pattern" >&2
+              exit 1
+            fi
+            cp -rL -- "${matches[@]}" "${archive}/"
+          done < "${GITHUB_WORKSPACE}/yocto/${{ matrix.name }}.archive"
+
+  archive:
+    name: Archive
+    needs: [yocto]
+    runs-on: [self-hosted, Linux, X64]
+    env:
+      ARCHIVE: ${{ inputs.archive }}
+
+    steps:
+      - name: Archive
+        run: |
+          set -ex
+
+          mv "${ARCHIVE}.tmp" ${ARCHIVE}
+          echo "${{ github.run_number }}" > ${ARCHIVE}/gh-number

@@ -1,0 +1,60 @@
+name: merge-main
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  NFS_ROOT: ${{ vars.NFS_ROOT || '/var/code/reckless-corp/storage' }}
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: [self-hosted, Linux, X64]
+    outputs:
+      kas_cache: ${{ steps.plan.outputs.kas_cache }}
+      kas_container: ${{ steps.plan.outputs.kas_container }}
+      yocto_archive: ${{ steps.plan.outputs.yocto_archive }}
+      yocto_needs_build: ${{ steps.plan.outputs.yocto_needs_build }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve what changed
+        id: plan
+        run: |
+          set -ex
+
+          archive="${NFS_ROOT%/}/archive"
+          kas_cache="${NFS_ROOT%/}/kas"
+          echo "kas_cache=${kas_cache}" >> "${GITHUB_OUTPUT}"
+
+          # We maintain a content-addressable-storage directory, casdir, for build
+          # artifacts. When we do a build we fingerprint the:
+          #  * git-hash of that component 
+          #  * git-hash of the workflow file that built it
+          # If that directory exists, we've already built the content we need.
+          # Otherwise we need to build the component
+          casdir="${archive}/${{ github.event.repository.name }}"
+          yocto_hash="$(git rev-parse HEAD:yocto)_$(git rev-parse HEAD:.github/workflows/yocto.yml)"
+          yocto_archive="${casdir}/yocto/${yocto_hash}"
+
+          if [ ! -d "${yocto_archive}" ] ; then
+            echo "Yocto build required"
+            echo "yocto_needs_build=true" >> "${GITHUB_OUTPUT}"
+            echo "yocto_archive=${yocto_archive}" >> "${GITHUB_OUTPUT}"
+          fi
+
+  yocto:
+    name: Build Yocto
+    needs: plan
+    if: needs.plan.outputs.yocto_needs_build == 'true'
+    uses: ./.github/workflows/yocto.yml
+    with:
+      archive: ${{ needs.plan.outputs.yocto_archive }}
+      kas_cache: ${{ needs.plan.outputs.kas_cache }}
