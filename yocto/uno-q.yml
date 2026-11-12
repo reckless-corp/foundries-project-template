@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/siemens/kas/master/kas/schema-kas.json
+
+header:
+  version: 14
+  includes:
+    - repo: meta-foundries
+      file: ci/uno-q.yml
+    - yocto/include/common.yml
+
+local_conf_header:
+  dev-adbd: |
+    # adb reaches the console on boards with no bughopper attached.
+    IMAGE_CLASSES += "image-adbd"
+    EXTRA_IMAGE_FEATURES += "enable-adbd"
