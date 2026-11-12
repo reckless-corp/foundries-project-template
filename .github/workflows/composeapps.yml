@@ -1,0 +1,184 @@
+name: Build ComposeApps
+
+on:
+  workflow_call:
+    inputs:
+      archive:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  discover:
+    name: Discover apps
+    runs-on: [self-hosted, Linux, X64]
+    outputs:
+      matrix: ${{ steps.apps.outputs.matrix }}
+      has_apps: ${{ steps.apps.outputs.has_apps }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Discover apps
+        id: apps
+        run: |
+          set -exuo pipefail
+          matrix=$(git ls-files -- ':(glob)composeapps/*/docker-compose.yml' |
+            jq -Rsc '{include: [split("\n")[] | select(length > 0) | {app: split("/")[1]}]}')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "has_apps=$(jq '.include | length > 0' <<< "$matrix")" >> "$GITHUB_OUTPUT"
+
+  apps:
+    name: App ${{ matrix.app }}
+    needs: discover
+    if: needs.discover.outputs.has_apps == 'true'
+    runs-on: [self-hosted, Linux, X64]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    env:
+      APP: ${{ matrix.app }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-compose-action@v2
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push services
+        working-directory: composeapps/${{ matrix.app }}
+        env:
+          DOCKER_DEFAULT_PLATFORM: linux/arm64
+        run: |
+          set -exuo pipefail
+          BUILD_OUTPUT=$(mktemp -d "${RUNNER_TEMP}/composeapp-${APP}.XXXXXX")
+          echo "BUILD_OUTPUT=$BUILD_OUTPUT" >> "$GITHUB_ENV"
+
+          # Compose supplies build settings; CI adds commit tags, registry cache and output.
+          docker compose -f docker-compose.yml build --print | jq -s --arg tag "$GITHUB_SHA" '
+            (.[0] // {target: {}}) |
+            .target |= with_entries(.value |= (
+              .output = ["type=registry"] |
+              if (.tags | length) == 0 then error("Build services require image:") else
+                (.tags[0] | sub(":(?<tag>[^/:]+)$"; "")) as $image |
+                .tags = [$image + ":" + $tag] |
+                .["cache-from"] = ((.["cache-from"] // []) +
+                  ["type=registry,ref=" + $image + ":buildcache"]) |
+                .["cache-to"] = ((.["cache-to"] // []) +
+                  ["type=registry,ref=" + $image + ":buildcache,mode=max"])
+              end
+            ))' > "$BUILD_OUTPUT/bake.json"
+          architectures=$(jq -er '
+            [.target[].platforms | sort] | unique |
+            if length > 1 then error("App services must build the same platforms")
+            else (.[0] // ["linux/arm64"]) | map(ltrimstr("linux/")) | join(",") end
+          ' "$BUILD_OUTPUT/bake.json")
+          echo "APP_ARCHITECTURES=$architectures" >> "$GITHUB_ENV"
+
+          echo '{}' > "$BUILD_OUTPUT/metadata.json"
+          if jq -e '.target | length > 0' "$BUILD_OUTPUT/bake.json" > /dev/null; then
+            docker buildx bake -f "$BUILD_OUTPUT/bake.json" --push \
+              --metadata-file "$BUILD_OUTPUT/metadata.json"
+          fi
+      - name: Composectl setup
+        run: |
+          set -exuo pipefail
+          composectl=/var/code/reckless-corp/storage/composectl_v97
+          if [ ! -x "$composectl" ]; then
+            composectl=$(mktemp "${RUNNER_TEMP}/composectl.XXXXXX")
+            curl -fLsS -o "$composectl" https://github.com/foundriesio/composeapp/releases/download/v97.0.1/composectl_97.0.1_linux_amd64
+            chmod +x "$composectl"
+          fi
+          echo "COMPOSECTL=$composectl" >> "$GITHUB_ENV"
+      - name: Publish app
+        env:
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -exuo pipefail
+          pins=$(jq -er --slurpfile build "$BUILD_OUTPUT/bake.json" '
+            . as $metadata | [$build[0].target | to_entries[] |
+              .key as $service | $metadata[$service]["containerimage.digest"] as $digest |
+              if ($digest // "" | test("^sha256:[0-9a-f]{64}$")) then
+                (.value.tags[0] | sub(":(?<tag>[^/:]+)$"; "")) + "@" + $digest
+              else error("Missing build digest for " + $service) end
+            ] | join(",")' "$BUILD_OUTPUT/metadata.json")
+          pinned_args=()
+          if [ -n "$pins" ]; then pinned_args=(--pinned-images "$pins"); fi
+          cd "composeapps/$APP"
+          tag="${GITHUB_RUN_NUMBER}_${GITHUB_SHA:0:12}"
+          architectures="$APP_ARCHITECTURES"
+          "$COMPOSECTL" publish -d "$BUILD_OUTPUT/app.hash" "${pinned_args[@]}" \
+            "ghcr.io/${REPOSITORY_OWNER}/${APP}-app:${tag}" "$architectures"
+          uri="ghcr.io/${REPOSITORY_OWNER}/${APP}-app@$(cat "$BUILD_OUTPUT/app.hash")"
+          mkdir -p "$BUILD_OUTPUT/publication"
+          jq -n --arg uri "$uri" --arg architectures "$architectures" \
+            '{uri: $uri, architectures: ($architectures | split(","))}' \
+            > "$BUILD_OUTPUT/publication/${APP}.json"
+      - name: Upload app publication
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-uri-${{ matrix.app }}
+          path: ${{ env.BUILD_OUTPUT }}/publication
+          if-no-files-found: error
+
+  archive:
+    name: Archive
+    needs: [discover, apps]
+    if: ${{ always() && needs.discover.result == 'success' && (needs.apps.result == 'success' || needs.discover.outputs.has_apps == 'false') }}
+    runs-on: [self-hosted, Linux, X64]
+    concurrency:
+      group: composeapps-archive-${{ inputs.archive }}
+      cancel-in-progress: false
+    env:
+      ARCHIVE: ${{ inputs.archive }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Prepare publication directory
+        run: echo "PUBLICATIONS=$(mktemp -d "${RUNNER_TEMP}/composeapp-publications.XXXXXX")" >> "$GITHUB_ENV"
+      - name: Download app publications
+        if: needs.discover.outputs.has_apps == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: app-uri-*
+          path: ${{ env.PUBLICATIONS }}
+          merge-multiple: true
+      - name: Composectl setup
+        run: |
+          set -euo pipefail
+          composectl=/var/code/reckless-corp/storage/composectl_v97
+          if [ ! -x "$composectl" ]; then
+            composectl=$(mktemp "${RUNNER_TEMP}/composectl.XXXXXX")
+            curl -fLsS -o "$composectl" https://github.com/foundriesio/composeapp/releases/download/v97.0.1/composectl_97.0.1_linux_amd64
+            chmod +x "$composectl"
+          fi
+          echo "COMPOSECTL=$composectl" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Assemble archive
+        env:
+          APP_MATRIX: ${{ needs.discover.outputs.matrix }}
+        run: |
+          set -euo pipefail
+          if [ -d "$ARCHIVE" ]; then
+            echo "Archive already completed: $ARCHIVE"
+            exit 0
+          fi
+          mkdir -p "$(dirname "$ARCHIVE")"
+          staging=$(mktemp -d "${ARCHIVE}.tmp.XXXXXX")
+          trap 'rm -rf -- "$staging"' EXIT
+          while IFS= read -r app; do
+            record="$PUBLICATIONS/$app.json"
+            uri=$(jq -er '.uri' "$record")
+            while IFS= read -r architecture; do
+              "$COMPOSECTL" pull -i "$staging" -s "$staging" -a "$architecture" "$uri"
+            done < <(jq -r '.architectures[]' "$record")
+          done < <(jq -r '.include[].app' <<< "$APP_MATRIX")
+          echo "$GITHUB_RUN_NUMBER" > "$staging/gh-number"
+          mv -T "$staging" "$ARCHIVE"

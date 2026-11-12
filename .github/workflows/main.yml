@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 env:
   NFS_ROOT: ${{ vars.NFS_ROOT || '/var/code/reckless-corp/storage' }}
@@ -20,6 +21,8 @@ jobs:
       kas_container: ${{ steps.plan.outputs.kas_container }}
       yocto_archive: ${{ steps.plan.outputs.yocto_archive }}
       yocto_needs_build: ${{ steps.plan.outputs.yocto_needs_build }}
+      composeapps_archive: ${{ steps.plan.outputs.composeapps_archive }}
+      composeapps_needs_build: ${{ steps.plan.outputs.composeapps_needs_build }}
 
     steps:
       - name: Checkout
@@ -36,7 +39,7 @@ jobs:
 
           # We maintain a content-addressable-storage directory, casdir, for build
           # artifacts. When we do a build we fingerprint the:
-          #  * git-hash of that component 
+          #  * git-hash of that component (composeapp or yocto)
           #  * git-hash of the workflow file that built it
           # If that directory exists, we've already built the content we need.
           # Otherwise we need to build the component
@@ -49,6 +52,22 @@ jobs:
             echo "yocto_needs_build=true" >> "${GITHUB_OUTPUT}"
             echo "yocto_archive=${yocto_archive}" >> "${GITHUB_OUTPUT}"
           fi
+
+          composeapps_hash="$(git rev-parse HEAD:composeapps)_$(git rev-parse HEAD:.github/workflows/composeapps.yml)"
+          composeapps_archive="${casdir}/composeapps/${composeapps_hash}"
+          if [ ! -d "${composeapps_archive}" ] ; then
+            echo "Composeapps build required"
+            echo "composeapps_needs_build=true" >> "${GITHUB_OUTPUT}"
+            echo "composeapps_archive=${composeapps_archive}" >> "${GITHUB_OUTPUT}"
+          fi
+
+  composeapps:
+    name: Build ComposeApps
+    needs: plan
+    if: needs.plan.outputs.composeapps_needs_build == 'true'
+    uses: ./.github/workflows/composeapps.yml
+    with:
+      archive: ${{ needs.plan.outputs.composeapps_archive }}
 
   yocto:
     name: Build Yocto
